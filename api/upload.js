@@ -9,4 +9,3 @@ export default async function handler(req, res) {
   const result = await githubPut(path, content, `Upload ${path}`);
   res.status(200).json(result);
 }
-
