@@ -2,14 +2,14 @@ import fetch from "node-fetch";
 
 export default async function handler(req, res) {
 
-  // CORS
+  // CORS HEADERS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "Only POST allowed" });
+    return res.status(405).json({ error: "Only POST allowed", cors: "*" });
   }
 
   try {
@@ -17,12 +17,9 @@ export default async function handler(req, res) {
     const repo = "drive";
     const baseFolder = "database";
     const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-
     const { file } = req.body;
 
-    // -------------------------------------------------------
-    // CASE 1: LIST ALL FILES
-    // -------------------------------------------------------
+    // LIST FILES
     if (!file) {
       const listUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${baseFolder}`;
 
@@ -33,22 +30,23 @@ export default async function handler(req, res) {
       const json = await resp.json();
 
       if (!Array.isArray(json)) {
-        return res.status(500).json({ error: "Unable to list files", raw: json });
+        return res.status(500).json({
+          error: "Unable to list files",
+          cors: "*",
+          raw: json
+        });
       }
 
-      const files = json
-        .filter(x => x.type === "file")
-        .map(x => x.name);
+      const files = json.filter(x => x.type === "file").map(x => x.name);
 
       return res.status(200).json({
         success: true,
+        cors: "*",
         files
       });
     }
 
-    // -------------------------------------------------------
-    // CASE 2: READ FILE CONTENT AS-IS
-    // -------------------------------------------------------
+    // READ A FILE
     const filePath = `${baseFolder}/${file}`;
     const fileUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`;
 
@@ -61,28 +59,29 @@ export default async function handler(req, res) {
     if (!json.content) {
       return res.status(404).json({
         error: "File not found",
+        cors: "*",
         file,
-        path: filePath,
         raw: json
       });
     }
 
-    // Decode base64 content
+    // Decode file content (base64)
     const raw = Buffer.from(json.content, "base64").toString("utf8");
 
     let parsed;
     try {
-      parsed = JSON.parse(raw); // if JSON, parse it
+      parsed = JSON.parse(raw);
     } catch {
-      parsed = raw;             // else return raw text
+      parsed = raw;
     }
 
     return res.status(200).json({
       success: true,
+      cors: "*",
       data: parsed
     });
 
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message, cors: "*" });
   }
 }
