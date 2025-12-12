@@ -2,86 +2,102 @@ import fetch from "node-fetch";
 
 export default async function handler(req, res) {
 
-  // CORS HEADERS
+  // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Only POST allowed", cors: "*" });
-  }
 
   try {
+    // ------------------------------------------------------
+    // CONFIG
+    // ------------------------------------------------------
     const owner = "lirilabs";
     const repo = "drive";
-    const baseFolder = "database";
-    const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-    const { file } = req.body;
+    const folderPath = "database";
 
-    // LIST FILES
-    if (!file) {
-      const listUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${baseFolder}`;
+    const apiHeaders = {
+      "User-Agent": "folder-reader",
+      "Cache-Control": "no-cache",
+      "Pragma": "no-cache"
+    };
 
-      const resp = await fetch(listUrl, {
-        headers: { Authorization: `Bearer ${GITHUB_TOKEN}` }
-      });
+    const noCacheHeaders = {
+      "Cache-Control": "no-cache",
+      "Pragma": "no-cache"
+    };
 
-      const json = await resp.json();
+    // ------------------------------------------------------
+    // Load JSON file content
+    // ------------------------------------------------------
+    async function loadJson(downloadUrl) {
+      try {
+        const resp = await fetch(downloadUrl, { headers: noCacheHeaders });
+        const text = await resp.text();
 
-      if (!Array.isArray(json)) {
-        return res.status(500).json({
-          error: "Unable to list files",
-          cors: "*",
-          raw: json
-        });
+        try {
+          return JSON.parse(text);
+        } catch {
+          return { invalidJson: true, raw: text };
+        }
+      } catch (err) {
+        return { error: true, message: err.message };
+      }
+    }
+
+    // ------------------------------------------------------
+    // Recursive folder reader
+    // ------------------------------------------------------
+    async function readFolder(path) {
+      const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+      const resp = await fetch(url, { headers: apiHeaders });
+      const items = await resp.json();
+
+      if (!Array.isArray(items)) {
+        return { error: true, raw: items };
       }
 
-      const files = json.filter(x => x.type === "file").map(x => x.name);
+      const output = [];
 
-      return res.status(200).json({
-        success: true,
-        cors: "*",
-        files
-      });
+      for (const item of items) {
+        if (item.type === "dir") {
+          output.push({
+            name: item.name,
+            path: item.path,
+            type: "directory",
+            children: await readFolder(item.path)
+          });
+        } else {
+          const file = {
+            name: item.name,
+            path: item.path,
+            type: "file",
+            download_url: item.download_url
+          };
+
+          if (item.name.endsWith(".json")) {
+            file.jsonContent = await loadJson(item.download_url);
+          }
+
+          output.push(file);
+        }
+      }
+
+      return output;
     }
 
-    // READ A FILE
-    const filePath = `${baseFolder}/${file}`;
-    const fileUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`;
-
-    const resp = await fetch(fileUrl, {
-      headers: { Authorization: `Bearer ${GITHUB_TOKEN}` }
-    });
-
-    const json = await resp.json();
-
-    if (!json.content) {
-      return res.status(404).json({
-        error: "File not found",
-        cors: "*",
-        file,
-        raw: json
-      });
-    }
-
-    // Decode file content (base64)
-    const raw = Buffer.from(json.content, "base64").toString("utf8");
-
-    let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      parsed = raw;
-    }
+    // ------------------------------------------------------
+    // READ ONLY THE "database" FOLDER
+    // ------------------------------------------------------
+    const data = await readFolder(folderPath);
 
     return res.status(200).json({
-      success: true,
-      cors: "*",
-      data: parsed
+      folder: folderPath,
+      content: data
     });
 
   } catch (err) {
-    return res.status(500).json({ error: err.message, cors: "*" });
+    return res.status(500).json({ error: err.message });
   }
 }
