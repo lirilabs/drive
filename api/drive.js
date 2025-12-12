@@ -1,4 +1,3 @@
-import crypto from "crypto";
 import fetch from "node-fetch";
 
 export default async function handler(req, res) {
@@ -14,98 +13,73 @@ export default async function handler(req, res) {
   }
 
   try {
-    // -------------------------------------------------------
-    // CONFIG
-    // -------------------------------------------------------
     const owner = "lirilabs";
     const repo = "drive";
-    const baseFolder = "database/encrypted";
+    const baseFolder = "database";
     const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 
-    const AES_KEY = crypto
-      .createHash("sha256")
-      .update(process.env.ENCRYPT_KEY || "DEFAULT_KEY")
-      .digest();
-
-    // -------------------------------------------------------
-    // POST BODY
-    // -------------------------------------------------------
     const { file } = req.body;
 
     // -------------------------------------------------------
-    // CASE 1: NO FILE PROVIDED → RETURN LIST OF FILES
+    // CASE 1: LIST ALL FILES
     // -------------------------------------------------------
     if (!file) {
       const listUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${baseFolder}`;
-      
-      const listResp = await fetch(listUrl, {
+
+      const resp = await fetch(listUrl, {
         headers: { Authorization: `Bearer ${GITHUB_TOKEN}` }
       });
 
-      const listJson = await listResp.json();
+      const json = await resp.json();
 
-      if (!Array.isArray(listJson)) {
-        return res.status(500).json({ error: "Unable to list files", raw: listJson });
+      if (!Array.isArray(json)) {
+        return res.status(500).json({ error: "Unable to list files", raw: json });
       }
 
-      const filenames = listJson
-        .filter(item => item.type === "file")
-        .map(item => item.name);
+      const files = json
+        .filter(x => x.type === "file")
+        .map(x => x.name);
 
       return res.status(200).json({
         success: true,
-        message: "Choose a file to decrypt",
-        files: filenames
+        files
       });
     }
 
     // -------------------------------------------------------
-    // CASE 2: FILE PROVIDED → DECRYPT IT
+    // CASE 2: READ FILE CONTENT AS-IS
     // -------------------------------------------------------
     const filePath = `${baseFolder}/${file}`;
+    const fileUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`;
 
-    const metaUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`;
-    
-    const metaResp = await fetch(metaUrl, {
+    const resp = await fetch(fileUrl, {
       headers: { Authorization: `Bearer ${GITHUB_TOKEN}` }
     });
-    
-    const metaJson = await metaResp.json();
 
-    if (!metaJson.content) {
+    const json = await resp.json();
+
+    if (!json.content) {
       return res.status(404).json({
         error: "File not found",
-        providedFile: file,
-        path: filePath
+        file,
+        path: filePath,
+        raw: json
       });
     }
 
-    // Decode base64 file content
-    const rawText = Buffer.from(metaJson.content, "base64").toString("utf8");
+    // Decode base64 content
+    const raw = Buffer.from(json.content, "base64").toString("utf8");
 
-    const payload = JSON.parse(rawText);
-
-    const iv = Buffer.from(payload.iv, "base64");
-    const encryptedText = payload.encrypted;
-
-    // -------------------------------------------------------
-    // DECRYPT USING AES-256-CBC
-    // -------------------------------------------------------
-    const decipher = crypto.createDecipheriv("aes-256-cbc", AES_KEY, iv);
-
-    let decrypted = decipher.update(encryptedText, "base64", "utf8");
-    decrypted += decipher.final("utf8");
-
-    let output;
+    let parsed;
     try {
-      output = JSON.parse(decrypted);
+      parsed = JSON.parse(raw); // if JSON, parse it
     } catch {
-      output = decrypted; // raw string
+      parsed = raw;             // else return raw text
     }
 
     return res.status(200).json({
       success: true,
-      decrypted: output
+      data: parsed
     });
 
   } catch (err) {
