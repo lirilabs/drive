@@ -10,48 +10,42 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
 
   try {
-    // ------------------------------------------------------
     // CONFIG
-    // ------------------------------------------------------
-    const owner = "lirilabs";           // CHANGE IF YOUR REPO OWNER IS DIFFERENT
-    const repo = "liri-app";            // MUST BE EXACT REPO NAME (no '-' at end)
-    const filePath = "drive/api/drive.js";
+    const owner = "lirilabs";
+    const repo = "drive";
+    const filePath = "api/drive.js";
 
     const apiHeaders = {
-      Authorization: `token ${process.env.GITHUB_TOKEN}`,
       "User-Agent": "single-file-reader",
       "Cache-Control": "no-cache",
       "Pragma": "no-cache"
     };
 
-    // ------------------------------------------------------
-    // Fetch GitHub file metadata
-    // ------------------------------------------------------
+    // STEP 1: Get file metadata (to retrieve download_url)
     const metaUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`;
     const metaResp = await fetch(metaUrl, { headers: apiHeaders });
-    const metaData = await metaResp.json();
+    const metaJson = await metaResp.json();
 
-    if (!metaData.download_url) {
+    if (!metaJson.download_url) {
       return res.status(404).json({
-        error: "File Not Found",
+        error: "File not found on GitHub",
         path: filePath,
-        raw: metaData
+        raw: metaJson
       });
     }
 
-    // ------------------------------------------------------
-    // Fetch raw JS file content
-    // ------------------------------------------------------
-    const jsResp = await fetch(metaData.download_url, {
+    // STEP 2: Download the raw JS file
+    const fileResp = await fetch(metaJson.download_url, {
       headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" }
     });
-    const jsText = await jsResp.text();
+    const fileText = await fileResp.text();
 
+    // FINAL RESPONSE
     return res.status(200).json({
       file: filePath,
-      size: metaData.size,
-      encoding: metaData.encoding,
-      content: jsText
+      size: metaJson.size,
+      sha: metaJson.sha,
+      content: fileText
     });
 
   } catch (err) {
