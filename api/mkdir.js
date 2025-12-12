@@ -5,7 +5,11 @@ export default async function handler(req, res) {
 
   if (!folder) return res.status(400).json({ error: "folder required" });
 
-  const result = await githubPut(`${folder}/.gitkeep`, "", `Create folder ${folder}`);
+  const result = await githubPut(
+    `${folder}/.gitkeep`,
+    "",
+    `Create folder ${folder}`
+  );
 
   res.status(200).json(result);
 }
