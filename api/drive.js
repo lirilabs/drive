@@ -10,42 +10,91 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
 
   try {
+    // ------------------------------------------------------
     // CONFIG
+    // ------------------------------------------------------
     const owner = "lirilabs";
     const repo = "drive";
-    const filePath = "api/drive.js";
+    const folderPath = "database";
 
     const apiHeaders = {
-      "User-Agent": "single-file-reader",
+      "User-Agent": "folder-reader",
       "Cache-Control": "no-cache",
       "Pragma": "no-cache"
     };
 
-    // STEP 1: Get file metadata (to retrieve download_url)
-    const metaUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`;
-    const metaResp = await fetch(metaUrl, { headers: apiHeaders });
-    const metaJson = await metaResp.json();
+    const noCacheHeaders = {
+      "Cache-Control": "no-cache",
+      "Pragma": "no-cache"
+    };
 
-    if (!metaJson.download_url) {
-      return res.status(404).json({
-        error: "File not found on GitHub",
-        path: filePath,
-        raw: metaJson
-      });
+    // ------------------------------------------------------
+    // Load JSON file content
+    // ------------------------------------------------------
+    async function loadJson(downloadUrl) {
+      try {
+        const resp = await fetch(downloadUrl, { headers: noCacheHeaders });
+        const text = await resp.text();
+
+        try {
+          return JSON.parse(text);
+        } catch {
+          return { invalidJson: true, raw: text };
+        }
+      } catch (err) {
+        return { error: true, message: err.message };
+      }
     }
 
-    // STEP 2: Download the raw JS file
-    const fileResp = await fetch(metaJson.download_url, {
-      headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" }
-    });
-    const fileText = await fileResp.text();
+    // ------------------------------------------------------
+    // Recursive folder reader
+    // ------------------------------------------------------
+    async function readFolder(path) {
+      const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+      const resp = await fetch(url, { headers: apiHeaders });
+      const items = await resp.json();
 
-    // FINAL RESPONSE
+      if (!Array.isArray(items)) {
+        return { error: true, raw: items };
+      }
+
+      const output = [];
+
+      for (const item of items) {
+        if (item.type === "dir") {
+          output.push({
+            name: item.name,
+            path: item.path,
+            type: "directory",
+            children: await readFolder(item.path)
+          });
+        } else {
+          const file = {
+            name: item.name,
+            path: item.path,
+            type: "file",
+            download_url: item.download_url
+          };
+
+          if (item.name.endsWith(".json")) {
+            file.jsonContent = await loadJson(item.download_url);
+          }
+
+          output.push(file);
+        }
+      }
+
+      return output;
+    }
+
+    // ------------------------------------------------------
+    // READ ONLY THE "database" FOLDER
+    // ------------------------------------------------------
+    const data = await readFolder(folderPath);
+
     return res.status(200).json({
-      file: filePath,
-      size: metaJson.size,
-      sha: metaJson.sha,
-      content: fileText
+      folder: folderPath,
+      content: data
     });
 
   } catch (err) {
