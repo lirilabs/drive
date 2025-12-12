@@ -2,7 +2,6 @@ import { githubGet } from "./utils";
 
 async function walk(path = "") {
   const items = await githubGet(path);
-
   if (!Array.isArray(items)) return [];
 
   const results = [];
