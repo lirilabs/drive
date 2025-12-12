@@ -1,13 +1,17 @@
 import fetch from "node-fetch";
+import LRU from "lru-cache";
 
 export default async function handler(req, res) {
 
-  // CORS
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  // ------------------------------------------------------
+  // CORS (Relax or tighten as required)
+  // ------------------------------------------------------
+  res.setHeader("Access-Control-Allow-Origin", "*"); 
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "GET") return res.status(405).json({ error: "Only GET allowed" });
 
   try {
     // ------------------------------------------------------
@@ -17,57 +21,85 @@ export default async function handler(req, res) {
     const repo = "drive";
     const folderPath = "database";
 
-    const apiHeaders = {
-      "User-Agent": "folder-reader",
-      "Cache-Control": "no-cache",
-      "Pragma": "no-cache"
-    };
+    const GITHUB_TOKEN = process.env.GITHUB_TOKEN || null;
 
-    const noCacheHeaders = {
-      "Cache-Control": "no-cache",
-      "Pragma": "no-cache"
+    const githubHeaders = {
+      "User-Agent": "drive-api",
+      "Accept": "application/vnd.github+json",
+      ...(GITHUB_TOKEN ? { Authorization: `Bearer ${GITHUB_TOKEN}` } : {})
     };
 
     // ------------------------------------------------------
-    // Load JSON file content
+    // GLOBAL LRU CACHE
     // ------------------------------------------------------
-    async function loadJson(downloadUrl) {
+    const cache = global.driveCache || new LRU({
+      max: 100,
+      ttl: 1000 * 60 * 5, // 5 minutes
+      allowStale: true
+    });
+    global.driveCache = cache;
+
+    const cacheKey = `folder:${folderPath}`;
+
+    // ------------------------------------------------------
+    // Return from cache if exists
+    // ------------------------------------------------------
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      return res.status(200).json({
+        cached: true,
+        folder: folderPath,
+        content: cached
+      });
+    }
+
+    // ------------------------------------------------------
+    // Utility: Safe JSON parser
+    // ------------------------------------------------------
+    const safeJson = (text) => {
+      try { return JSON.parse(text); }
+      catch {
+        return { invalidJson: true, raw: text };
+      }
+    };
+
+    // ------------------------------------------------------
+    // Load JSON file
+    // ------------------------------------------------------
+    async function loadJson(url) {
       try {
-        const resp = await fetch(downloadUrl, { headers: noCacheHeaders });
-        const text = await resp.text();
-
-        try {
-          return JSON.parse(text);
-        } catch {
-          return { invalidJson: true, raw: text };
-        }
+        const r = await fetch(url);
+        const t = await r.text();
+        return safeJson(t);
       } catch (err) {
         return { error: true, message: err.message };
       }
     }
 
     // ------------------------------------------------------
-    // Recursive folder reader
+    // Recursive GitHub folder reader
     // ------------------------------------------------------
     async function readFolder(path) {
-      const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
-      const resp = await fetch(url, { headers: apiHeaders });
-      const items = await resp.json();
+      const url = `https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}`;
 
-      if (!Array.isArray(items)) {
-        return { error: true, raw: items };
+      const resp = await fetch(url, { headers: githubHeaders });
+
+      if (!resp.ok) {
+        return { error: true, status: resp.status, message: await resp.text() };
       }
 
-      const output = [];
+      const items = await resp.json();
 
-      for (const item of items) {
+      if (!Array.isArray(items)) return { error: true, raw: items };
+
+      const tasks = items.map(async (item) => {
         if (item.type === "dir") {
-          output.push({
+          return {
             name: item.name,
             path: item.path,
             type: "directory",
             children: await readFolder(item.path)
-          });
+          };
         } else {
           const file = {
             name: item.name,
@@ -80,24 +112,31 @@ export default async function handler(req, res) {
             file.jsonContent = await loadJson(item.download_url);
           }
 
-          output.push(file);
+          return file;
         }
-      }
+      });
 
-      return output;
+      return Promise.all(tasks);
     }
 
     // ------------------------------------------------------
-    // READ ONLY THE "database" FOLDER
+    // Execute folder read
     // ------------------------------------------------------
-    const data = await readFolder(folderPath);
+    const result = await readFolder(folderPath);
+
+    // Cache the result
+    cache.set(cacheKey, result);
 
     return res.status(200).json({
+      cached: false,
       folder: folderPath,
-      content: data
+      content: result
     });
 
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({
+      error: true,
+      message: err.message
+    });
   }
 }
