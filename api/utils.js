@@ -1,8 +1,6 @@
-
-import fetch from "node-fetch";
 import crypto from "crypto";
 
-// GitHub config
+// GitHub Repo Config
 export const owner = "lirilabs";
 export const repo = "drive";
 export const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
@@ -10,78 +8,78 @@ export const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 export const headers = {
   Authorization: `Bearer ${GITHUB_TOKEN}`,
   "Content-Type": "application/json",
-  "User-Agent": "drive-api-service",
+  "User-Agent": "vercel-drive-serverless",
   "Cache-Control": "no-cache"
 };
 
-// ---------------------
-// GitHub Utils
-// ---------------------
-
+// --------------------------------------------------
+// GitHub API helpers
+// --------------------------------------------------
 export async function githubGet(path) {
-  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
-  const res = await fetch(url, { headers });
+  const res = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/contents/${path}`,
+    { headers, cache: "no-store" }
+  );
   return res.json();
 }
 
 export async function githubPut(path, content, message) {
-  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
-
-  const body = {
-    message,
-    content: Buffer.from(content).toString("base64")
-  };
-
-  return fetch(url, {
-    method: "PUT",
-    headers,
-    body: JSON.stringify(body)
-  }).then(r => r.json());
+  const res = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/contents/${path}`,
+    {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({
+        message,
+        content: Buffer.from(content).toString("base64")
+      })
+    }
+  );
+  return res.json();
 }
 
 export async function githubUpdate(path, content, sha, message) {
-  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
-
-  const body = {
-    message,
-    sha,
-    content: Buffer.from(content).toString("base64")
-  };
-
-  return fetch(url, {
-    method: "PUT",
-    headers,
-    body: JSON.stringify(body)
-  }).then(r => r.json());
+  const res = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/contents/${path}`,
+    {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({
+        message,
+        sha,
+        content: Buffer.from(content).toString("base64")
+      })
+    }
+  );
+  return res.json();
 }
 
 export async function githubDelete(path, sha) {
-  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
-
-  const body = {
-    message: `Delete ${path}`,
-    sha
-  };
-
-  return fetch(url, {
-    method: "DELETE",
-    headers,
-    body: JSON.stringify(body)
-  }).then(r => r.json());
+  const res = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/contents/${path}`,
+    {
+      method: "DELETE",
+      headers,
+      body: JSON.stringify({
+        message: `Delete ${path}`,
+        sha
+      })
+    }
+  );
+  return res.json();
 }
 
-// ---------------------
-// AES Encryption Utils
-// ---------------------
-
-const AES_KEY = crypto
+// --------------------------------------------------
+// AES Encryption/Decryption (Serverless Safe)
+// --------------------------------------------------
+const KEY = crypto
   .createHash("sha256")
-  .update(process.env.ENCRYPT_KEY || "DEFAULT_KEY")
+  .update(process.env.ENCRYPT_KEY)
   .digest();
 
 export function encryptAES(data) {
   const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv("aes-256-cbc", AES_KEY, iv);
+  const cipher = crypto.createCipheriv("aes-256-cbc", KEY, iv);
 
   const text = typeof data === "string" ? data : JSON.stringify(data);
 
@@ -97,7 +95,7 @@ export function encryptAES(data) {
 export function decryptAES({ iv, encrypted }) {
   const decipher = crypto.createDecipheriv(
     "aes-256-cbc",
-    AES_KEY,
+    KEY,
     Buffer.from(iv, "base64")
   );
 
