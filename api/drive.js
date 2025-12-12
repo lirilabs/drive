@@ -1,105 +1,113 @@
 import fetch from "node-fetch";
-import LRU from "lru-cache";
+
+let memoryCache = {};       // Safe cache for serverless
+let cacheExpiry = {};       // Expiry timestamps
 
 export default async function handler(req, res) {
 
-  // ------------------------------------------------------
-  // CORS (Relax or tighten as required)
-  // ------------------------------------------------------
-  res.setHeader("Access-Control-Allow-Origin", "*"); 
+  // CORS
+  res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "GET") return res.status(405).json({ error: "Only GET allowed" });
 
   try {
-    // ------------------------------------------------------
+    //----------------------------------------------------------
     // CONFIG
-    // ------------------------------------------------------
+    //----------------------------------------------------------
     const owner = "lirilabs";
     const repo = "drive";
     const folderPath = "database";
 
-    const GITHUB_TOKEN = process.env.GITHUB_TOKEN || null;
+    const CACHE_TTL = 1000 * 60 * 3; // Cache 3 min
+    const cacheKey = `drive_${folderPath}`;
 
-    const githubHeaders = {
-      "User-Agent": "drive-api",
-      "Accept": "application/vnd.github+json",
-      ...(GITHUB_TOKEN ? { Authorization: `Bearer ${GITHUB_TOKEN}` } : {})
-    };
-
-    // ------------------------------------------------------
-    // GLOBAL LRU CACHE
-    // ------------------------------------------------------
-    const cache = global.driveCache || new LRU({
-      max: 100,
-      ttl: 1000 * 60 * 5, // 5 minutes
-      allowStale: true
-    });
-    global.driveCache = cache;
-
-    const cacheKey = `folder:${folderPath}`;
-
-    // ------------------------------------------------------
-    // Return from cache if exists
-    // ------------------------------------------------------
-    const cached = cache.get(cacheKey);
-    if (cached) {
+    //----------------------------------------------------------
+    // RETURN CACHE IF VALID
+    //----------------------------------------------------------
+    if (memoryCache[cacheKey] && Date.now() < cacheExpiry[cacheKey]) {
       return res.status(200).json({
         cached: true,
         folder: folderPath,
-        content: cached
+        content: memoryCache[cacheKey]
       });
     }
 
-    // ------------------------------------------------------
-    // Utility: Safe JSON parser
-    // ------------------------------------------------------
-    const safeJson = (text) => {
+    //----------------------------------------------------------
+    // SAFE JSON PARSER
+    //----------------------------------------------------------
+    function safeJson(text) {
       try { return JSON.parse(text); }
       catch {
         return { invalidJson: true, raw: text };
       }
-    };
+    }
 
-    // ------------------------------------------------------
-    // Load JSON file
-    // ------------------------------------------------------
+    //----------------------------------------------------------
+    // LOAD JSON FILE
+    //----------------------------------------------------------
     async function loadJson(url) {
       try {
-        const r = await fetch(url);
-        const t = await r.text();
-        return safeJson(t);
+        const resp = await fetch(url);
+        if (!resp.ok) return { error: true, status: resp.status };
+
+        const text = await resp.text();
+        return safeJson(text);
+
       } catch (err) {
         return { error: true, message: err.message };
       }
     }
 
-    // ------------------------------------------------------
-    // Recursive GitHub folder reader
-    // ------------------------------------------------------
+    //----------------------------------------------------------
+    // READ GITHUB FOLDER (RECURSIVE)
+    //----------------------------------------------------------
     async function readFolder(path) {
-      const url = `https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}`;
+      const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
 
-      const resp = await fetch(url, { headers: githubHeaders });
-
-      if (!resp.ok) {
-        return { error: true, status: resp.status, message: await resp.text() };
+      let resp;
+      try {
+        resp = await fetch(apiUrl, {
+          headers: {
+            "User-Agent": "drive-reader",
+            "Accept": "application/vnd.github+json"
+          }
+        });
+      } catch (err) {
+        return { error: true, message: "Network error: " + err.message };
       }
 
-      const items = await resp.json();
+      if (!resp.ok) {
+        const text = await resp.text();
+        return {
+          error: true,
+          status: resp.status,
+          message: text
+        };
+      }
 
-      if (!Array.isArray(items)) return { error: true, raw: items };
+      let items;
+      try {
+        items = await resp.json();
+      } catch (err) {
+        return { error: true, message: "Invalid JSON from GitHub" };
+      }
 
-      const tasks = items.map(async (item) => {
+      if (!Array.isArray(items)) {
+        return { error: true, raw: items };
+      }
+
+      const results = [];
+      for (const item of items) {
         if (item.type === "dir") {
-          return {
+          results.push({
             name: item.name,
             path: item.path,
             type: "directory",
             children: await readFolder(item.path)
-          };
+          });
         } else {
           const file = {
             name: item.name,
@@ -112,31 +120,40 @@ export default async function handler(req, res) {
             file.jsonContent = await loadJson(item.download_url);
           }
 
-          return file;
+          results.push(file);
         }
-      });
+      }
 
-      return Promise.all(tasks);
+      return results;
     }
 
-    // ------------------------------------------------------
-    // Execute folder read
-    // ------------------------------------------------------
-    const result = await readFolder(folderPath);
+    //----------------------------------------------------------
+    // EXECUTE READ
+    //----------------------------------------------------------
+    const output = await readFolder(folderPath);
 
-    // Cache the result
-    cache.set(cacheKey, result);
+    // Save cache
+    memoryCache[cacheKey] = output;
+    cacheExpiry[cacheKey] = Date.now() + CACHE_TTL;
 
+    //----------------------------------------------------------
+    // SEND RESPONSE
+    //----------------------------------------------------------
     return res.status(200).json({
       cached: false,
       folder: folderPath,
-      content: result
+      content: output
     });
 
   } catch (err) {
+    //----------------------------------------------------------
+    // GUARANTEED SAFE ERROR RESPONSE (NO CRASH)
+    //----------------------------------------------------------
+    console.error("Serverless Crash Prevented:", err);
+
     return res.status(500).json({
       error: true,
-      message: err.message
+      message: "Internal error: " + err.message
     });
   }
 }
