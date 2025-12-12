@@ -2,17 +2,12 @@ import fetch from "node-fetch";
 
 export default async function handler(req, res) {
 
-  // ------------------------------------------------------
-  // CORS
-  // ------------------------------------------------------
+  // Basic CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
+  if (req.method === "OPTIONS") return res.status(200).end();
 
   try {
     // ------------------------------------------------------
@@ -20,10 +15,11 @@ export default async function handler(req, res) {
     // ------------------------------------------------------
     const owner = "lirilabs";
     const repo = "liri-app-";
+    const folderToRead = "database";
 
-    const apiHeaders = {
+    const headers = {
       Authorization: `token ${process.env.GITHUB_TOKEN}`,
-      "User-Agent": "repo-reader-service",
+      "User-Agent": "database-folder-reader",
       "Cache-Control": "no-cache",
       "Pragma": "no-cache"
     };
@@ -34,17 +30,16 @@ export default async function handler(req, res) {
     };
 
     // ------------------------------------------------------
-    // Utility: fetch JSON safely
+    // Fetch JSON with no-cache
     // ------------------------------------------------------
-    async function fetchAsJson(downloadUrl) {
+    async function readJson(downloadUrl) {
       try {
-        const res = await fetch(downloadUrl, { method: "GET", headers: noCacheHeaders });
-        const txt = await res.text();
-
+        const resp = await fetch(downloadUrl, { headers: noCacheHeaders });
+        const text = await resp.text();
         try {
-          return JSON.parse(txt);
+          return JSON.parse(text);
         } catch {
-          return { invalidJson: true, raw: txt };
+          return { invalidJson: true, raw: text };
         }
       } catch (err) {
         return { error: true, message: err.message };
@@ -52,26 +47,26 @@ export default async function handler(req, res) {
     }
 
     // ------------------------------------------------------
-    // Recursive folder reader
+    // Recursive directory reader
     // ------------------------------------------------------
-    async function readDirectory(path = "") {
+    async function readFolder(path) {
       const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
-      const res = await fetch(url, { headers: apiHeaders });
-      const data = await res.json();
+      const resp = await fetch(url, { headers });
+      const data = await resp.json();
 
       if (!Array.isArray(data)) {
         return { error: true, raw: data };
       }
 
-      const output = [];
+      const result = [];
 
       for (const item of data) {
         if (item.type === "dir") {
-          output.push({
+          result.push({
             name: item.name,
             path: item.path,
             type: "directory",
-            children: await readDirectory(item.path)
+            children: await readFolder(item.path)
           });
         } else {
           const file = {
@@ -82,59 +77,24 @@ export default async function handler(req, res) {
           };
 
           if (item.name.endsWith(".json")) {
-            file.jsonContent = await fetchAsJson(item.download_url);
+            file.jsonContent = await readJson(item.download_url);
           }
 
-          output.push(file);
+          result.push(file);
         }
       }
 
-      return output;
+      return result;
     }
 
     // ------------------------------------------------------
-    // Read root directory
+    // Read ONLY the "database" folder
     // ------------------------------------------------------
-    const rootRes = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/contents`,
-      { headers: apiHeaders }
-    );
-
-    const root = await rootRes.json();
-
-    if (!Array.isArray(root)) {
-      return res.status(200).json({ message: "Invalid GitHub response", raw: root });
-    }
-
-    // ------------------------------------------------------
-    // Extract version folders (v1, v2, v10...)
-    // ------------------------------------------------------
-    const versionFolders = root
-      .filter(i => i.type === "dir" && /^v\d+$/i.test(i.name))
-      .map(i => ({
-        name: i.name,
-        path: i.path,
-        number: Number(i.name.replace("v", ""))
-      }))
-      .sort((a, b) => b.number - a.number);
-
-    const content = {};
-
-    for (const v of versionFolders) {
-      content[v.name] = await readDirectory(v.path);
-    }
-
-    const latest = versionFolders[0] || null;
-
-    if (latest) {
-      latest.files = content[latest.name];
-    }
+    const databaseContent = await readFolder(folderToRead);
 
     return res.status(200).json({
-      totalVersions: versionFolders.length,
-      versions: versionFolders,
-      latest,
-      content
+      folder: folderToRead,
+      content: databaseContent
     });
 
   } catch (error) {
