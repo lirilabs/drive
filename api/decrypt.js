@@ -28,19 +28,42 @@ export default async function handler(req, res) {
       .digest();
 
     // -------------------------------------------------------
-    // GET FILE NAME FROM USER
+    // POST BODY
     // -------------------------------------------------------
     const { file } = req.body;
 
+    // -------------------------------------------------------
+    // CASE 1: NO FILE PROVIDED → RETURN LIST OF FILES
+    // -------------------------------------------------------
     if (!file) {
-      return res.status(400).json({ error: "Missing file name" });
+      const listUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${baseFolder}`;
+      
+      const listResp = await fetch(listUrl, {
+        headers: { Authorization: `Bearer ${GITHUB_TOKEN}` }
+      });
+
+      const listJson = await listResp.json();
+
+      if (!Array.isArray(listJson)) {
+        return res.status(500).json({ error: "Unable to list files", raw: listJson });
+      }
+
+      const filenames = listJson
+        .filter(item => item.type === "file")
+        .map(item => item.name);
+
+      return res.status(200).json({
+        success: true,
+        message: "Choose a file to decrypt",
+        files: filenames
+      });
     }
 
+    // -------------------------------------------------------
+    // CASE 2: FILE PROVIDED → DECRYPT IT
+    // -------------------------------------------------------
     const filePath = `${baseFolder}/${file}`;
 
-    // -------------------------------------------------------
-    // 1. FETCH ENCRYPTED FILE FROM GITHUB
-    // -------------------------------------------------------
     const metaUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`;
     
     const metaResp = await fetch(metaUrl, {
@@ -52,8 +75,8 @@ export default async function handler(req, res) {
     if (!metaJson.content) {
       return res.status(404).json({
         error: "File not found",
-        path: filePath,
-        raw: metaJson
+        providedFile: file,
+        path: filePath
       });
     }
 
@@ -66,7 +89,7 @@ export default async function handler(req, res) {
     const encryptedText = payload.encrypted;
 
     // -------------------------------------------------------
-    // 2. DECRYPT DATA USING AES-256-CBC
+    // DECRYPT USING AES-256-CBC
     // -------------------------------------------------------
     const decipher = crypto.createDecipheriv("aes-256-cbc", AES_KEY, iv);
 
@@ -77,7 +100,7 @@ export default async function handler(req, res) {
     try {
       output = JSON.parse(decrypted);
     } catch {
-      output = decrypted; // raw text fallback
+      output = decrypted; // raw string
     }
 
     return res.status(200).json({
