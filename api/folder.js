@@ -20,7 +20,7 @@ export default async function handler(req, res) {
     // --------------------------------------------------
     const owner = "lirilabs";
     const repo = "drive";
-    const baseFolder = "database/users";
+    const basePath = "database/users";
 
     const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
     if (!GITHUB_TOKEN) {
@@ -30,27 +30,27 @@ export default async function handler(req, res) {
     // --------------------------------------------------
     // INPUT
     // --------------------------------------------------
-    const { uid } = req.body || {};
-    if (!uid) {
-      return res.status(400).json({ error: "uid is required" });
+    const { uid, folderName } = req.body || {};
+
+    if (!uid || !folderName) {
+      return res.status(400).json({
+        error: "uid and folderName are required"
+      });
     }
 
     // --------------------------------------------------
-    // AUTO FOLDER NAME (SERVER CONTROLLED)
+    // SAFE FOLDER NAME
     // --------------------------------------------------
-    const now = new Date();
-    const stamp = now.toISOString()
-      .replace(/[:.]/g, "")
-      .replace("T", "-")
-      .slice(0, 15);
-
-    const folderName = `folder-${stamp}`;
+    const safeFolder = folderName
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/(^-|-$)/g, "");
 
     // --------------------------------------------------
-    // FINAL PATH (.keep FILE)
+    // PATH (.keep FILE)
     // --------------------------------------------------
     const keepFilePath =
-      `${baseFolder}/${uid}/root/${folderName}/.keep`;
+      `${basePath}/${uid}/root/${safeFolder}/.keep`;
 
     const apiUrl =
       `https://api.github.com/repos/${owner}/${repo}/contents/${keepFilePath}`;
@@ -62,19 +62,20 @@ export default async function handler(req, res) {
       method: "PUT",
       headers: {
         "Authorization": `Bearer ${GITHUB_TOKEN}`,
-        "User-Agent": "drive-auto-folder",
+        "User-Agent": "drive-folder-api",
         "Accept": "application/vnd.github+json",
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        message: `Create folder ${folderName} for ${uid}`,
+        message: `Create folder ${safeFolder} for ${uid}`,
         content: Buffer.from("init").toString("base64")
       })
     });
 
     const result = await response.json();
 
-    if (!response.ok) {
+    // Folder already exists → OK
+    if (!response.ok && response.status !== 422) {
       return res.status(response.status).json({
         error: true,
         github: result
@@ -87,12 +88,12 @@ export default async function handler(req, res) {
     return res.status(200).json({
       success: true,
       uid,
-      folderName,
-      path: `database/users/${uid}/root/${folderName}/`
+      folderName: safeFolder,
+      path: `database/users/${uid}/root/${safeFolder}/`
     });
 
   } catch (err) {
-    console.error("Auto folder creation failed:", err);
+    console.error("Folder creation error:", err);
     return res.status(500).json({
       error: true,
       message: err.message
