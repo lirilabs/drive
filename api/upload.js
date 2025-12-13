@@ -3,9 +3,7 @@ import formidable from "formidable";
 import fs from "fs";
 
 export const config = {
-  api: {
-    bodyParser: false, // REQUIRED for file uploads
-  },
+  api: { bodyParser: false },
 };
 
 export default async function handler(req, res) {
@@ -24,8 +22,8 @@ export default async function handler(req, res) {
     const owner = "lirilabs";
     const repo = "drive";
 
-    const ITEMS_DIR = "items";
     const ROOT_DIR = "root";
+    const ITEMS_DIR = `${ROOT_DIR}/items`;
 
     const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
     if (!GITHUB_TOKEN) {
@@ -48,28 +46,28 @@ export default async function handler(req, res) {
 
     if (!uid || !itemName || !file) {
       return res.status(400).json({
-        error: "uid, itemName and file are required",
+        error: "uid, itemName, and file are required",
       });
     }
 
-    /* ---------------- SAFE FILE NAME ---------------- */
+    /* ---------------- SAFE NAME ---------------- */
     const safeName = itemName
       .toLowerCase()
       .replace(/[^a-z0-9.]+/g, "-")
       .replace(/(^-|-$)/g, "");
 
     const ext = file.originalFilename.split(".").pop();
-    const finalFileName = `${safeName}.${ext}`;
+    const fileName = `${safeName}.${ext}`;
 
-    const itemPath = `${ITEMS_DIR}/${finalFileName}`;
+    const itemPath = `${ITEMS_DIR}/${fileName}`;
     const jsonPath = `${ROOT_DIR}/${safeName}.json`;
 
     /* ---------------- READ FILE ---------------- */
-    const fileBuffer = fs.readFileSync(file.filepath);
-    const encodedFile = fileBuffer.toString("base64");
+    const buffer = fs.readFileSync(file.filepath);
+    const encodedFile = buffer.toString("base64");
 
-    /* ---------------- UPLOAD FILE ---------------- */
-    const uploadToGitHub = async (path, content, message) => {
+    /* ---------------- GITHUB UPLOAD HELPER ---------------- */
+    const upload = async (path, content, message) => {
       const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
 
       let sha;
@@ -105,18 +103,19 @@ export default async function handler(req, res) {
       return result.content;
     };
 
-    const uploadedFile = await uploadToGitHub(
+    /* ---------------- UPLOAD FILE ---------------- */
+    const uploadedFile = await upload(
       itemPath,
       encodedFile,
-      `Upload file: ${finalFileName}`
+      `Upload file: ${fileName}`
     );
 
-    /* ---------------- CREATE ROOT JSON ---------------- */
+    /* ---------------- METADATA JSON ---------------- */
     const metadata = {
       uid,
       name: itemName,
       file: {
-        name: finalFileName,
+        name: fileName,
         path: itemPath,
         url: uploadedFile.download_url,
       },
@@ -127,7 +126,7 @@ export default async function handler(req, res) {
       JSON.stringify(metadata, null, 2)
     ).toString("base64");
 
-    const uploadedJSON = await uploadToGitHub(
+    const uploadedJSON = await upload(
       jsonPath,
       encodedJSON,
       `Create metadata for ${itemName}`
@@ -136,12 +135,12 @@ export default async function handler(req, res) {
     /* ---------------- RESPONSE ---------------- */
     return res.status(200).json({
       success: true,
-      item: uploadedFile,
+      file: uploadedFile,
       metadata: uploadedJSON,
     });
 
   } catch (err) {
-    console.error("Upload error:", err);
+    console.error("Upload failed:", err);
     return res.status(500).json({
       error: true,
       message: err.message,
