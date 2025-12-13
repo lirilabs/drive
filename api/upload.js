@@ -1,7 +1,6 @@
 import fetch from "node-fetch";
 
 export default async function handler(req, res) {
-
   // --------------------------------------------------
   // CORS
   // --------------------------------------------------
@@ -30,12 +29,34 @@ export default async function handler(req, res) {
     // --------------------------------------------------
     // INPUT
     // --------------------------------------------------
-    const { uid, itemName, content } = req.body || {};
+    let body = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch (e) {
+        return res.status(400).json({ error: "Invalid JSON body" });
+      }
+    }
+    const { uid, itemName, content } = body || {};
 
     if (!uid || !itemName || content === undefined) {
       return res.status(400).json({
         error: "uid, itemName, and content are required"
       });
+    }
+
+    // --------------------------------------------------
+    // SIZE LIMIT (e.g. 50MB base64, ~37MB raw)
+    // --------------------------------------------------
+    // If content.base64 exists, check its length
+    if (content.base64 && typeof content.base64 === "string") {
+      // 50MB base64 = 50 * 1024 * 1024 bytes = 52428800 chars (1 char = 1 byte in base64)
+      const maxBase64Size = 50 * 1024 * 1024;
+      if (content.base64.length > maxBase64Size * 1.37) { // base64 expands data by ~37%
+        return res.status(413).json({
+          error: "File too large. Max allowed is 50MB."
+        });
+      }
     }
 
     // --------------------------------------------------
@@ -71,6 +92,21 @@ export default async function handler(req, res) {
     // --------------------------------------------------
     const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`;
 
+    // Check if file exists to get sha for update
+    let sha = undefined;
+    const getRes = await fetch(apiUrl, {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${GITHUB_TOKEN}`,
+        "User-Agent": "drive-uploader",
+        "Accept": "application/vnd.github+json"
+      }
+    });
+    if (getRes.ok) {
+      const getData = await getRes.json();
+      sha = getData.sha;
+    }
+
     const response = await fetch(apiUrl, {
       method: "PUT",
       headers: {
@@ -81,7 +117,8 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         message: `Add file: ${itemName}`,
-        content: encodedContent
+        content: encodedContent,
+        ...(sha ? { sha } : {})
       })
     });
 
