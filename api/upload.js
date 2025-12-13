@@ -1,9 +1,15 @@
 import fetch from "node-fetch";
+import formidable from "formidable";
+import fs from "fs";
+
+export const config = {
+  api: {
+    bodyParser: false, // REQUIRED for file uploads
+  },
+};
 
 export default async function handler(req, res) {
-  // --------------------------------------------------
-  // CORS
-  // --------------------------------------------------
+  /* ---------------- CORS ---------------- */
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -14,139 +20,131 @@ export default async function handler(req, res) {
   }
 
   try {
-    // --------------------------------------------------
-    // CONFIG
-    // --------------------------------------------------
+    /* ---------------- CONFIG ---------------- */
     const owner = "lirilabs";
     const repo = "drive";
-    const baseFolder = "database/users";
+
+    const ITEMS_DIR = "items";
+    const ROOT_DIR = "root";
 
     const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
     if (!GITHUB_TOKEN) {
       return res.status(500).json({ error: "GitHub token missing" });
     }
 
-    // --------------------------------------------------
-    // INPUT
-    // --------------------------------------------------
-    let body = req.body;
-    if (typeof body === "string") {
-      try {
-        body = JSON.parse(body);
-      } catch (e) {
-        return res.status(400).json({ error: "Invalid JSON body" });
-      }
-    }
-    const { uid, itemName, content } = body || {};
+    /* ---------------- PARSE FORM ---------------- */
+    const form = formidable({ multiples: false });
 
-    if (!uid || !itemName || content === undefined) {
+    const { fields, files } = await new Promise((resolve, reject) => {
+      form.parse(req, (err, fields, files) => {
+        if (err) reject(err);
+        else resolve({ fields, files });
+      });
+    });
+
+    const uid = fields.uid?.toString();
+    const itemName = fields.itemName?.toString();
+    const file = files.file;
+
+    if (!uid || !itemName || !file) {
       return res.status(400).json({
-        error: "uid, itemName, and content are required"
+        error: "uid, itemName and file are required",
       });
     }
 
-    // --------------------------------------------------
-    // SIZE LIMIT (e.g. 50MB base64, ~37MB raw)
-    // --------------------------------------------------
-    // If content.base64 exists, check its length
-    if (content.base64 && typeof content.base64 === "string") {
-      // 50MB base64 = 50 * 1024 * 1024 bytes = 52428800 chars (1 char = 1 byte in base64)
-      const maxBase64Size = 50 * 1024 * 1024;
-      if (content.base64.length > maxBase64Size * 1.37) { // base64 expands data by ~37%
-        return res.status(413).json({
-          error: "File too large. Max allowed is 50MB."
-        });
-      }
-    }
-
-    // --------------------------------------------------
-    // SAFE FILE NAME
-    // --------------------------------------------------
+    /* ---------------- SAFE FILE NAME ---------------- */
     const safeName = itemName
       .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/[^a-z0-9.]+/g, "-")
       .replace(/(^-|-$)/g, "");
 
-    const date = new Date().toISOString().split("T")[0];
-    const fileName = `${safeName}-${date}.json`;
+    const ext = file.originalFilename.split(".").pop();
+    const finalFileName = `${safeName}.${ext}`;
 
-    // 🔴 CHANGED PATH (root instead of items)
-    const filePath = `${baseFolder}/${uid}/root/${fileName}`;
+    const itemPath = `${ITEMS_DIR}/${finalFileName}`;
+    const jsonPath = `${ROOT_DIR}/${safeName}.json`;
 
-    // --------------------------------------------------
-    // FILE PAYLOAD
-    // --------------------------------------------------
-    const fileData = {
-      uid,
-      name: itemName,
-      content,
-      createdAt: new Date().toISOString()
+    /* ---------------- READ FILE ---------------- */
+    const fileBuffer = fs.readFileSync(file.filepath);
+    const encodedFile = fileBuffer.toString("base64");
+
+    /* ---------------- UPLOAD FILE ---------------- */
+    const uploadToGitHub = async (path, content, message) => {
+      const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+
+      let sha;
+      const check = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${GITHUB_TOKEN}`,
+          Accept: "application/vnd.github+json",
+        },
+      });
+
+      if (check.ok) {
+        const data = await check.json();
+        sha = data.sha;
+      }
+
+      const response = await fetch(url, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${GITHUB_TOKEN}`,
+          Accept: "application/vnd.github+json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message,
+          content,
+          ...(sha ? { sha } : {}),
+        }),
+      });
+
+      const result = await response.json();
+      if (!response.ok) throw new Error(JSON.stringify(result));
+
+      return result.content;
     };
 
-    const encodedContent = Buffer
-      .from(JSON.stringify(fileData, null, 2))
-      .toString("base64");
+    const uploadedFile = await uploadToGitHub(
+      itemPath,
+      encodedFile,
+      `Upload file: ${finalFileName}`
+    );
 
-    // --------------------------------------------------
-    // GITHUB CREATE / UPDATE
-    // --------------------------------------------------
-    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`;
-
-    // Check if file exists to get sha for update
-    let sha = undefined;
-    const getRes = await fetch(apiUrl, {
-      method: "GET",
-      headers: {
-        "Authorization": `Bearer ${GITHUB_TOKEN}`,
-        "User-Agent": "drive-uploader",
-        "Accept": "application/vnd.github+json"
-      }
-    });
-    if (getRes.ok) {
-      const getData = await getRes.json();
-      sha = getData.sha;
-    }
-
-    const response = await fetch(apiUrl, {
-      method: "PUT",
-      headers: {
-        "Authorization": `Bearer ${GITHUB_TOKEN}`,
-        "User-Agent": "drive-uploader",
-        "Accept": "application/vnd.github+json",
-        "Content-Type": "application/json"
+    /* ---------------- CREATE ROOT JSON ---------------- */
+    const metadata = {
+      uid,
+      name: itemName,
+      file: {
+        name: finalFileName,
+        path: itemPath,
+        url: uploadedFile.download_url,
       },
-      body: JSON.stringify({
-        message: `Add file: ${itemName}`,
-        content: encodedContent,
-        ...(sha ? { sha } : {})
-      })
-    });
+      createdAt: new Date().toISOString(),
+    };
 
-    const result = await response.json();
+    const encodedJSON = Buffer.from(
+      JSON.stringify(metadata, null, 2)
+    ).toString("base64");
 
-    if (!response.ok) {
-      return res.status(response.status).json({
-        error: true,
-        github: result
-      });
-    }
+    const uploadedJSON = await uploadToGitHub(
+      jsonPath,
+      encodedJSON,
+      `Create metadata for ${itemName}`
+    );
 
-    // --------------------------------------------------
-    // SUCCESS RESPONSE
-    // --------------------------------------------------
+    /* ---------------- RESPONSE ---------------- */
     return res.status(200).json({
       success: true,
-      uid,
-      file: fileName,
-      path: filePath,
-      url: result.content?.html_url
+      item: uploadedFile,
+      metadata: uploadedJSON,
     });
 
   } catch (err) {
-    console.error("Upload failed:", err);
+    console.error("Upload error:", err);
     return res.status(500).json({
       error: true,
-      message: err.message
+      message: err.message,
     });
   }
 }
