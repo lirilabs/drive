@@ -11,139 +11,130 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Only POST allowed" });
-  }
+  if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
 
   try {
     /* ---------------- CONFIG ---------------- */
     const owner = "lirilabs";
     const repo = "drive";
+    const token = process.env.GITHUB_TOKEN;
 
-    const ROOT_DIR = "root";
-    const ITEMS_DIR = `${ROOT_DIR}/items`;
-
-    const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-    if (!GITHUB_TOKEN) {
-      return res.status(500).json({ error: "GitHub token missing" });
-    }
+    if (!token) return res.status(500).json({ error: "GitHub token missing" });
 
     /* ---------------- PARSE FORM ---------------- */
-    const form = formidable({ multiples: false });
-
-    const { fields, files } = await new Promise((resolve, reject) => {
-      form.parse(req, (err, fields, files) => {
-        if (err) reject(err);
-        else resolve({ fields, files });
-      });
-    });
+    const form = formidable();
+    const { fields, files } = await new Promise((res, rej) =>
+      form.parse(req, (e, f, fl) => (e ? rej(e) : res({ fields: f, files: fl })))
+    );
 
     const uid = fields.uid?.toString();
-    const itemName = fields.itemName?.toString();
     const file = files.file;
-
-    if (!uid || !itemName || !file) {
-      return res.status(400).json({
-        error: "uid, itemName, and file are required",
-      });
+    if (!uid || !file) {
+      return res.status(400).json({ error: "uid & file required" });
     }
 
-    /* ---------------- SAFE NAME ---------------- */
-    const safeName = itemName
+    /* ---------------- PATHS ---------------- */
+    const ROOT = `database/users/${uid}/root`;
+    const ITEMS = `${ROOT}/items`;
+
+    const safeName = file.originalFilename
       .toLowerCase()
-      .replace(/[^a-z0-9.]+/g, "-")
-      .replace(/(^-|-$)/g, "");
+      .replace(/[^a-z0-9.]+/g, "-");
 
-    const ext = file.originalFilename.split(".").pop();
-    const fileName = `${safeName}.${ext}`;
+    const filePath = `${ITEMS}/${safeName}`;
+    const metaPath = `${ROOT}/${safeName}.json`;
+    const indexPath = `${ROOT}/index.json`;
 
-    const itemPath = `${ITEMS_DIR}/${fileName}`;
-    const jsonPath = `${ROOT_DIR}/${safeName}.json`;
-
-    /* ---------------- READ FILE ---------------- */
-    const buffer = fs.readFileSync(file.filepath);
-    const encodedFile = buffer.toString("base64");
-
-    /* ---------------- GITHUB UPLOAD HELPER ---------------- */
-    const upload = async (path, content, message) => {
+    /* ---------------- HELPERS ---------------- */
+    const uploadGitHub = async (path, content, msg) => {
       const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
-
       let sha;
+
       const check = await fetch(url, {
-        headers: {
-          Authorization: `Bearer ${GITHUB_TOKEN}`,
-          Accept: "application/vnd.github+json",
-        },
+        headers: { Authorization: `Bearer ${token}` },
       });
+      if (check.ok) sha = (await check.json()).sha;
 
-      if (check.ok) {
-        const data = await check.json();
-        sha = data.sha;
-      }
-
-      const response = await fetch(url, {
+      const res = await fetch(url, {
         method: "PUT",
         headers: {
-          Authorization: `Bearer ${GITHUB_TOKEN}`,
-          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          message,
+          message: msg,
           content,
-          ...(sha ? { sha } : {}),
+          ...(sha && { sha }),
         }),
       });
 
-      const result = await response.json();
-      if (!response.ok) throw new Error(JSON.stringify(result));
-
-      return result.content;
+      const data = await res.json();
+      if (!res.ok) throw new Error(JSON.stringify(data));
+      return data.content;
     };
 
     /* ---------------- UPLOAD FILE ---------------- */
-    const uploadedFile = await upload(
-      itemPath,
-      encodedFile,
-      `Upload file: ${fileName}`
+    const fileBuffer = fs.readFileSync(file.filepath);
+    const uploadedFile = await uploadGitHub(
+      filePath,
+      fileBuffer.toString("base64"),
+      `Upload ${safeName}`
     );
 
     /* ---------------- METADATA JSON ---------------- */
-    const metadata = {
-      uid,
-      name: itemName,
-      file: {
-        name: fileName,
-        path: itemPath,
-        url: uploadedFile.download_url,
-      },
+    const meta = {
+      name: safeName,
+      type: file.mimetype,
+      size: file.size,
+      path: filePath,
+      url: uploadedFile.download_url,
       createdAt: new Date().toISOString(),
     };
 
-    const encodedJSON = Buffer.from(
-      JSON.stringify(metadata, null, 2)
-    ).toString("base64");
+    await uploadGitHub(
+      metaPath,
+      Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"),
+      `Meta for ${safeName}`
+    );
 
-    const uploadedJSON = await upload(
-      jsonPath,
-      encodedJSON,
-      `Create metadata for ${itemName}`
+    /* ---------------- UPDATE INDEX ---------------- */
+    let index = [];
+    const indexUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${indexPath}`;
+
+    const indexRes = await fetch(indexUrl, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    let indexSha;
+    if (indexRes.ok) {
+      const data = await indexRes.json();
+      indexSha = data.sha;
+      index = JSON.parse(Buffer.from(data.content, "base64").toString());
+    }
+
+    index.push({
+      name: safeName,
+      type: "file",
+      meta: metaPath,
+      createdAt: meta.createdAt,
+    });
+
+    await uploadGitHub(
+      indexPath,
+      Buffer.from(JSON.stringify(index, null, 2)).toString("base64"),
+      "Update index"
     );
 
     /* ---------------- RESPONSE ---------------- */
-    return res.status(200).json({
+    res.json({
       success: true,
-      file: uploadedFile,
-      metadata: uploadedJSON,
+      file: meta,
+      indexCount: index.length,
     });
 
   } catch (err) {
-    console.error("Upload failed:", err);
-    return res.status(500).json({
-      error: true,
-      message: err.message,
-    });
+    console.error(err);
+    res.status(500).json({ error: err.message });
   }
 }
