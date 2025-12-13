@@ -4,20 +4,27 @@ import fs from "fs";
 
 export const config = {
   api: {
-    bodyParser: false,
+    bodyParser: false, // REQUIRED for binary
   },
 };
 
 export default async function handler(req, res) {
 
   // --------------------------------------------------
-  // CORS
+  // CORS (FULL & CORRECT)
   // --------------------------------------------------
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization"
+  );
+  res.setHeader("Access-Control-Max-Age", "86400");
 
-  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Only POST allowed" });
   }
@@ -36,21 +43,23 @@ export default async function handler(req, res) {
     }
 
     // --------------------------------------------------
-    // PARSE MULTIPART (BINARY)
+    // PARSE MULTIPART FORM
     // --------------------------------------------------
     const form = formidable({ keepExtensions: true });
 
     form.parse(req, async (err, fields, files) => {
       if (err) {
+        console.error("Form parse error:", err);
         return res.status(500).json({ error: "Form parse failed" });
       }
 
-      const { uid, itemName } = fields;
+      const uid = fields.uid;
+      const itemName = fields.itemName;
       const file = files.file;
 
       if (!uid || !itemName || !file) {
         return res.status(400).json({
-          error: "uid, itemName, and file are required",
+          error: "uid, itemName and file are required",
         });
       }
 
@@ -73,28 +82,28 @@ export default async function handler(req, res) {
       const encodedContent = buffer.toString("base64");
 
       // --------------------------------------------------
-      // GITHUB UPLOAD
+      // UPLOAD TO GITHUB
       // --------------------------------------------------
       const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`;
 
-      const response = await fetch(apiUrl, {
+      const ghResponse = await fetch(apiUrl, {
         method: "PUT",
         headers: {
-          "Authorization": `Bearer ${GITHUB_TOKEN}`,
+          Authorization: `Bearer ${GITHUB_TOKEN}`,
           "User-Agent": "drive-uploader",
-          "Accept": "application/vnd.github+json",
+          Accept: "application/vnd.github+json",
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          message: `Add file: ${itemName}`,
+          message: `Add file: ${fileName}`,
           content: encodedContent,
         }),
       });
 
-      const result = await response.json();
+      const result = await ghResponse.json();
 
-      if (!response.ok) {
-        return res.status(response.status).json({
+      if (!ghResponse.ok) {
+        return res.status(ghResponse.status).json({
           error: true,
           github: result,
         });
