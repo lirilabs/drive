@@ -31,14 +31,14 @@ export default async function handler(req, res) {
     }
 
     // --------------------------------------------------
-    // TARGET ROOT PATH
+    // ROOT PATH
     // --------------------------------------------------
     const rootPath = `${basePath}/${uid}/root`;
     const apiUrl =
       `https://api.github.com/repos/${owner}/${repo}/contents/${rootPath}`;
 
     // --------------------------------------------------
-    // FETCH ROOT CONTENTS
+    // FETCH ROOT ITEMS
     // --------------------------------------------------
     const response = await fetch(apiUrl, {
       headers: {
@@ -56,7 +56,6 @@ export default async function handler(req, res) {
     }
 
     const items = await response.json();
-
     if (!Array.isArray(items)) {
       return res.status(500).json({
         error: true,
@@ -65,14 +64,46 @@ export default async function handler(req, res) {
     }
 
     // --------------------------------------------------
-    // CLEAN OUTPUT
+    // HELPERS
     // --------------------------------------------------
-    const list = items.map(item => ({
-      name: item.name,
-      type: item.type === "dir" ? "folder" : "file",
-      path: item.path,
-      downloadUrl: item.download_url || null
-    }));
+    async function readJsonFile(url) {
+      try {
+        const r = await fetch(url);
+        if (!r.ok) return null;
+        return await r.json();
+      } catch {
+        return null;
+      }
+    }
+
+    // --------------------------------------------------
+    // PROCESS ITEMS
+    // --------------------------------------------------
+    const folders = [];
+    const files = [];
+
+    for (const item of items) {
+      if (item.type === "dir") {
+        folders.push({
+          name: item.name,
+          path: item.path,
+          type: "folder"
+        });
+      } else {
+        let jsonContent = null;
+
+        if (item.name.endsWith(".json") && item.download_url) {
+          jsonContent = await readJsonFile(item.download_url);
+        }
+
+        files.push({
+          name: item.name,
+          path: item.path,
+          type: "file",
+          content: jsonContent
+        });
+      }
+    }
 
     // --------------------------------------------------
     // SUCCESS
@@ -80,8 +111,10 @@ export default async function handler(req, res) {
     return res.status(200).json({
       success: true,
       uid,
-      count: list.length,
-      items: list
+      folders,
+      files,
+      folderCount: folders.length,
+      fileCount: files.length
     });
 
   } catch (err) {
