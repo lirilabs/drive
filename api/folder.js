@@ -31,43 +31,50 @@ export default async function handler(req, res) {
     // INPUT
     // --------------------------------------------------
     const { uid } = req.body || {};
-
     if (!uid) {
       return res.status(400).json({ error: "uid is required" });
     }
 
     // --------------------------------------------------
-    // ROOT FOLDER PATH
+    // AUTO FOLDER NAME (SERVER CONTROLLED)
+    // --------------------------------------------------
+    const now = new Date();
+    const stamp = now.toISOString()
+      .replace(/[:.]/g, "")
+      .replace("T", "-")
+      .slice(0, 15);
+
+    const folderName = `folder-${stamp}`;
+
+    // --------------------------------------------------
+    // FINAL PATH (.keep FILE)
     // --------------------------------------------------
     const keepFilePath =
-      `${baseFolder}/${uid}/root/.keep`;
+      `${baseFolder}/${uid}/root/${folderName}/.keep`;
 
     const apiUrl =
       `https://api.github.com/repos/${owner}/${repo}/contents/${keepFilePath}`;
 
     // --------------------------------------------------
-    // CREATE ROOT FOLDER (IDEMPOTENT)
+    // CREATE FOLDER
     // --------------------------------------------------
     const response = await fetch(apiUrl, {
       method: "PUT",
       headers: {
         "Authorization": `Bearer ${GITHUB_TOKEN}`,
-        "User-Agent": "drive-root-init",
+        "User-Agent": "drive-auto-folder",
         "Accept": "application/vnd.github+json",
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        message: `Initialize root folder for ${uid}`,
-        content: Buffer.from("root-init").toString("base64")
+        message: `Create folder ${folderName} for ${uid}`,
+        content: Buffer.from("init").toString("base64")
       })
     });
 
     const result = await response.json();
 
-    // --------------------------------------------------
-    // ALREADY EXISTS = OK
-    // --------------------------------------------------
-    if (!response.ok && response.status !== 422) {
+    if (!response.ok) {
       return res.status(response.status).json({
         error: true,
         github: result
@@ -80,12 +87,12 @@ export default async function handler(req, res) {
     return res.status(200).json({
       success: true,
       uid,
-      path: `database/users/${uid}/root/`,
-      message: "Root folder ready"
+      folderName,
+      path: `database/users/${uid}/root/${folderName}/`
     });
 
   } catch (err) {
-    console.error("Root init failed:", err);
+    console.error("Auto folder creation failed:", err);
     return res.status(500).json({
       error: true,
       message: err.message
